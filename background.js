@@ -240,9 +240,9 @@ function injectContentBridge(tabId) {
   });
 }
 
-function sendPromptOnTab(tabId, message) {
+function sendPromptOnTab(tabId, message, model) {
   return new Promise(function (resolve, reject) {
-    chrome.tabs.sendMessage(tabId, { action: "qlSendViaWs", message: message }, function (resp) {
+    chrome.tabs.sendMessage(tabId, { action: "qlSendViaWs", message: message, model: model || "auto" }, function (resp) {
       if (chrome.runtime.lastError) {
         return reject(new Error(chrome.runtime.lastError.message));
       }
@@ -252,7 +252,7 @@ function sendPromptOnTab(tabId, message) {
   });
 }
 
-async function deliverPromptViaTab(message) {
+async function deliverPromptViaTab(message, model) {
   var tab = await new Promise(function (resolve) {
     findLovableProjectTab(resolve);
   });
@@ -275,7 +275,7 @@ async function deliverPromptViaTab(message) {
   }
 
   try {
-    return await sendPromptOnTab(tabId, message);
+    return await sendPromptOnTab(tabId, message, model);
   } catch (firstErr) {
     var errMsg = (firstErr && firstErr.message) || "";
     if (errMsg.indexOf("Receiving end") === -1 && errMsg.indexOf("Could not establish connection") === -1) {
@@ -283,7 +283,7 @@ async function deliverPromptViaTab(message) {
     }
     await injectContentBridge(tabId);
     await new Promise(function (r) { setTimeout(r, 200); });
-    return await sendPromptOnTab(tabId, message);
+    return await sendPromptOnTab(tabId, message, model);
   }
 }
 
@@ -532,7 +532,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.action === "sendPromptToLovable") {
     (async function () {
       try {
-        await deliverPromptViaTab(msg.message || "");
+        await deliverPromptViaTab(msg.message || "", msg.model || "auto");
         sendResponse({ ok: true });
       } catch (err) {
         sendResponse({ ok: false, error: err.message || "Send failed" });

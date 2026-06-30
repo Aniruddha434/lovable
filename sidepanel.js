@@ -90,6 +90,8 @@
   const SP_MAX_FILE_SIZE = 20 * 1024 * 1024;
   const SP_HISTORY_KEY = 'ql_chat_history';
   const SP_MAX_HISTORY = 200;
+  const SP_MODEL_KEY = 'mxx_selected_model';
+  const SP_DEFAULT_MODEL = 'auto';
   const CURRENT_EXT_VERSION = extensionVersionShort();
 
   function applySidepanelFooterVersion() {
@@ -661,6 +663,18 @@
     if (!container) return;
     container.innerHTML =
       '<textarea class="sp-textarea" id="sp-msg" rows="3" placeholder="Type your command..." spellcheck="false"></textarea>' +
+      '<div class="sp-model-row" style="display:flex;align-items:center;gap:8px;margin:8px 0 10px">' +
+        '<label for="sp-model-select" style="font-size:11px;color:var(--ql-text-muted,#888);white-space:nowrap">Model</label>' +
+        '<select id="sp-model-select" style="flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid var(--ql-border,#333);background:var(--ql-bg-2,#1c1c1c);color:inherit;font-size:12px">' +
+          '<option value="auto">Lovable default</option>' +
+          '<option value="claude-3-5-sonnet-latest">Claude 3.5 Sonnet</option>' +
+          '<option value="claude-3-7-sonnet-latest">Claude 3.7 Sonnet</option>' +
+          '<option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>' +
+          '<option value="gpt-4o">GPT-4o</option>' +
+          '<option value="gpt-4o-mini">GPT-4o mini</option>' +
+          '<option value="o3-mini">o3 mini</option>' +
+        '</select>' +
+      '</div>' +
       '<div id="sp-attach-preview" class="sp-attach-preview" style="display:none"></div>' +
       '<div class="sp-action-bar">' +
         '<div class="sp-action-left"><label class="sp-toggle"><input type="checkbox" id="sp-modo-plano"><span class="sp-toggle-slider"></span></label><span class="sp-toggle-label">Plan</span></div>' +
@@ -745,6 +759,8 @@
       if (checkbox.checked) showModoPlanoAlert();
     });
 
+    setupSpModelSelect();
+
     // File attachment
     setupSpFileAttachment();
 
@@ -762,6 +778,20 @@
     setupSpQuickInit();
     setupSpPublishProject();
     setupSpEnableCloud();
+  }
+
+  function setupSpModelSelect() {
+    var select = document.getElementById('sp-model-select');
+    if (!select) return;
+    chrome.storage.local.get([SP_MODEL_KEY], function(res) {
+      var value = res && res[SP_MODEL_KEY] ? String(res[SP_MODEL_KEY]) : SP_DEFAULT_MODEL;
+      var exists = Array.prototype.some.call(select.options, function(opt) { return opt.value === value; });
+      select.value = exists ? value : SP_DEFAULT_MODEL;
+    });
+    select.addEventListener('change', function() {
+      var value = select.value || SP_DEFAULT_MODEL;
+      chrome.storage.local.set({ [SP_MODEL_KEY]: value });
+    });
   }
 
   // --- Speech Recognition (Web Speech API) ---
@@ -1104,12 +1134,15 @@
 
   function sendPromptViaLovableTab(finalMsg) {
     return new Promise(function(resolve, reject) {
-      chrome.runtime.sendMessage({ action: "sendPromptToLovable", message: finalMsg }, function(resp) {
+      chrome.storage.local.get([SP_MODEL_KEY], function(stored) {
+        var selectedModel = stored && stored[SP_MODEL_KEY] ? String(stored[SP_MODEL_KEY]) : SP_DEFAULT_MODEL;
+        chrome.runtime.sendMessage({ action: "sendPromptToLovable", message: finalMsg, model: selectedModel }, function(resp) {
         if (chrome.runtime.lastError) {
           return reject(new Error(chrome.runtime.lastError.message));
         }
         if (resp && resp.ok) resolve();
         else reject(new Error((resp && resp.error) || "Send failed"));
+        });
       });
     });
   }

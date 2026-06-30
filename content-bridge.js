@@ -77,7 +77,7 @@
     return r;
   }
 
-  function sendViaWs(message) {
+  function sendViaWs(message, model) {
     return new Promise(function (resolve, reject) {
       var payload = {
         id: "umsg_" + _qlUlid(),
@@ -94,7 +94,7 @@
         current_viewport_width: window.innerWidth || 1280,
         current_viewport_height: window.innerHeight || 800,
         current_viewport_dpr: window.devicePixelRatio || 1,
-        model: null
+        model: model && model !== "auto" ? model : null
       };
       var timer = setTimeout(function () {
         window.removeEventListener("message", handler);
@@ -134,14 +134,14 @@
     if (wasDisabled) sendBtn.setAttribute("disabled", "");
   }
 
-  async function deliverPromptToLovable(text) {
+  async function deliverPromptToLovable(text, model) {
     var strategy = (typeof SEND_STRATEGY !== "undefined" && SEND_STRATEGY) ? SEND_STRATEGY : "native";
     if (strategy === "relay") {
       throw new Error("Relay send is disabled. Use native or websocket strategy.");
     }
     if (strategy === "websocket") {
       try {
-        await sendViaWs(text);
+        await sendViaWs(text, model);
         return;
       } catch (e) {
         if (typeof MXX_DEBUG !== "undefined" && MXX_DEBUG) {
@@ -180,7 +180,7 @@
       return false;
     }
     if (msg && msg.action === "qlSendViaWs") {
-      deliverPromptToLovable(msg.message || "")
+      deliverPromptToLovable(msg.message || "", msg.model || "auto")
         .then(function () { sendResponse({ ok: true }); })
         .catch(function (err) { sendResponse({ ok: false, error: err.message || String(err) }); });
       return true;
