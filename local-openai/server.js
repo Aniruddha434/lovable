@@ -410,8 +410,8 @@ app.post("/v1/responses", requireAuth, async (req, res) => {
   }
 });
 
-// Catch-all for unknown routes
-app.all("*", (req, res) => {
+// Catch-all for unknown routes. Express 5 rejects bare "*" route patterns.
+app.use((req, res) => {
   log(`⚠️ UNKNOWN ROUTE: ${req.method} ${req.path}`);
   res.status(404).json({ error: { message: `Route not found: ${req.method} ${req.path}`, type: "invalid_request_error" } });
 });
