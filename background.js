@@ -20,7 +20,7 @@ try {
 // side changes (expiry, revoke, pause, time bumps) propagate to every device
 // within minutes — without flooding the backend.
 // ============================================================
-const MXX_LICENSE_API = "https://unlimitedprompts.lovable.app/api/public/validate-license";
+const MXX_LICENSE_API = "https://lovable-black-ten.vercel.app/api/public/validate-license";
 const MXX_HEARTBEAT_ALARM = "mxx-license-heartbeat";
 const MXX_LICENSE_KEYS = [
   "mxx_license_key",
@@ -397,6 +397,20 @@ chrome.storage.local.get(["ql_sidebar_mode"], (res) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.ql_sidebar_mode) {
     enableActionSidePanel();
+  }
+  // Auto-push token to local OpenAI-compatible server whenever it changes
+  if (area === "local" && (changes.lovable_token || changes.lovable_projectId)) {
+    chrome.storage.local.get(["lovable_token", "lovable_projectId"], function(res) {
+      var tok = res.lovable_token || "";
+      var pid = res.lovable_projectId || "";
+      if (!tok) return;
+      var localPort = 8787;
+      fetch("http://127.0.0.1:" + localPort + "/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: tok, project_id: pid }),
+      }).catch(function() {});
+    });
   }
 });
 

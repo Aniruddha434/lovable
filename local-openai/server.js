@@ -5,84 +5,50 @@ import { createServer } from "http";
 const app = express();
 app.use(express.json({ limit: "16mb" }));
 
-// ── Config ────────────────────────────────────────────────────────────────────
-const PORT        = Number(process.env.PORT || 8787);
+// ── Config ─────────────────────────────────────────────────────────────────
+const PORT          = Number(process.env.PORT || 8787);
 const LOCAL_API_KEY = process.env.LOCAL_API_KEY || "local-dev-key";
-const DEFAULT_MODEL = process.env.DEFAULT_MODEL || "claude-3-5-sonnet-latest";
 
-const ANTHROPIC_MODELS = [
-  { id: "claude-3-5-sonnet-latest",    ctx: 200000 },
-  { id: "claude-3-7-sonnet-latest",    ctx: 200000 },
-  { id: "claude-sonnet-4-20250514",    ctx: 200000 },
-  { id: "claude-3-5-haiku-latest",     ctx: 200000 },
-  { id: "claude-3-opus-latest",        ctx: 200000 },
+// ── In-memory token store (pushed from extension) ───────────────────────────
+let lovableToken     = process.env.LOVABLE_TOKEN     || "";
+let lovableProjectId = process.env.LOVABLE_PROJECT_ID || "";
+
+// ── Lovable models ──────────────────────────────────────────────────────────
+const LOVABLE_MODELS = [
+  { id: "claude-sonnet-4-5",           label: "Claude Sonnet 4.5 (Lovable)"  },
+  { id: "claude-3-7-sonnet-20250219",  label: "Claude 3.7 Sonnet (Lovable)"  },
+  { id: "claude-3-5-sonnet-20241022",  label: "Claude 3.5 Sonnet (Lovable)"  },
+  { id: "claude-3-5-haiku-20241022",   label: "Claude 3.5 Haiku (Lovable)"   },
+  { id: "gpt-4o-2024-11-20",           label: "GPT-4o (Lovable)"             },
+  { id: "auto",                         label: "Lovable Default"              },
 ];
 
-const OPENAI_MODELS = [
-  { id: "gpt-4o",       ctx: 128000 },
-  { id: "gpt-4o-mini",  ctx: 128000 },
-  { id: "gpt-4-turbo",  ctx: 128000 },
-  { id: "o1",           ctx: 200000 },
-  { id: "o1-mini",      ctx: 128000 },
-  { id: "o3-mini",      ctx: 200000 },
-  { id: "codex-mini-latest", ctx: 200000 },
-];
-
-const ALL_MODELS = [...ANTHROPIC_MODELS, ...OPENAI_MODELS];
-
-function isAnthropicModel(model) {
-  return String(model || "").startsWith("claude");
-}
-
-// ── Auth ──────────────────────────────────────────────────────────────────────
+// ── Auth ────────────────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
-  const auth  = req.get("authorization") || "";
-  const token = auth.replace(/^Bearer\s+/i, "").trim();
-  if (LOCAL_API_KEY && token !== LOCAL_API_KEY) {
+  const auth  = (req.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (LOCAL_API_KEY && auth !== LOCAL_API_KEY) {
     return res.status(401).json({
-      error: { message: "Invalid local API key", type: "invalid_request_error", code: "invalid_api_key" }
+      error: { message: "Invalid local API key — set Authorization: Bearer " + LOCAL_API_KEY, type: "invalid_request_error" }
     });
   }
   next();
 }
 
-// ── Message helpers ───────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 function contentToString(content) {
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content.map(p => {
-      if (typeof p === "string") return p;
-      if (p.type === "text") return p.text || "";
-      if (p.type === "image_url") return "[image]";
-      return "";
-    }).join("\n");
-  }
-  return "";
+  if (Array.isArray(content)) return content.map(p => p.text || p.content || "").join("\n");
+  return String(content || "");
 }
 
-function toAnthropicMessages(messages) {
-  const systemParts = [];
-  const chat = [];
-  for (const msg of messages || []) {
-    if (msg.role === "system") {
-      systemParts.push(contentToString(msg.content));
-      continue;
-    }
-    // tool / function results become user messages
-    const role = msg.role === "assistant" ? "assistant" : "user";
-    const content = contentToString(msg.content);
-    // collapse consecutive same-role messages (Anthropic requires alternating)
-    if (chat.length && chat[chat.length - 1].role === role) {
-      chat[chat.length - 1].content += "\n" + content;
-    } else {
-      chat.push({ role, content });
-    }
-  }
-  if (!chat.length) chat.push({ role: "user", content: "" });
-  return { system: systemParts.join("\n\n"), messages: chat };
+function ulid() {
+  const C = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  let ts = Date.now(), r = "";
+  for (let i = 9; i >= 0; i--) { r = C[ts % 32] + r; ts = Math.floor(ts / 32); }
+  for (let j = 0; j < 16; j++) r += C[Math.floor(Math.random() * 32)];
+  return r;
 }
 
-// ── SSE helpers ───────────────────────────────────────────────────────────────
 function sseStart(res) {
   res.setHeader("content-type", "text/event-stream");
   res.setHeader("cache-control", "no-cache");
@@ -91,409 +57,227 @@ function sseStart(res) {
   res.flushHeaders();
 }
 
-function sseSend(res, data) {
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+function sseSend(res, data) { res.write(`data: ${JSON.stringify(data)}\n\n`); }
+function sseDone(res)       { res.write("data: [DONE]\n\n"); res.end(); }
+
+function makeChunk(id, model, delta, finish_reason = null) {
+  return { id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta, finish_reason }] };
 }
 
-function sseDone(res) {
-  res.write("data: [DONE]\n\n");
-  res.end();
-}
+// ── Lovable API chat ────────────────────────────────────────────────────────
+async function lovableChat({ messages, model, stream, projectId, token, res }) {
+  const tok = token || lovableToken;
+  const pid = projectId || lovableProjectId;
 
-function makeChunk({ id, model, delta, finish_reason = null }) {
-  return {
-    id,
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta, finish_reason }],
+  if (!tok) throw new Error("No Lovable token. Open lovable.dev in Chrome with the extension active, then POST /token or set LOVABLE_TOKEN in .env");
+  if (!pid) throw new Error("No Lovable project ID. Open a project on lovable.dev first, or POST /token with project_id");
+
+  // Extract last user message as the prompt
+  const userMsgs = messages.filter(m => m.role === "user");
+  const lastUser = userMsgs[userMsgs.length - 1];
+  const prompt   = contentToString(lastUser?.content || "");
+
+  const lovModel = model && model !== "auto" ? model : null;
+
+  const payload = {
+    id: "umsg_" + ulid(),
+    message: prompt,
+    files: [],
+    selected_elements: [],
+    chat_only: false,
+    view: "editor",
+    view_description: "",
+    optimisticImageUrls: [],
+    ai_message_id: "aimsg_" + ulid(),
+    thread_id: "main",
+    current_page: `/projects/${pid}`,
+    current_viewport_width: 1280,
+    current_viewport_height: 800,
+    current_viewport_dpr: 1,
+    model: lovModel,
   };
-}
 
-// ── Anthropic streaming ───────────────────────────────────────────────────────
-async function streamAnthropic(body, res) {
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set in .env");
-  const model     = body.model || DEFAULT_MODEL;
-  const converted = toAnthropicMessages(body.messages || []);
-  const id        = `chatcmpl-${crypto.randomUUID()}`;
-
-  const upstream = await fetch("https://api.anthropic.com/v1/messages", {
+  const url = `https://api.lovable.dev/projects/${pid}/messages`;
+  const resp = await fetch(url, {
     method: "POST",
     headers: {
+      "authorization": `Bearer ${tok}`,
       "content-type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
+      "origin": "https://lovable.dev",
+      "referer": `https://lovable.dev/projects/${pid}`,
+      "accept": "text/event-stream",
     },
-    body: JSON.stringify({
-      model,
-      system:     converted.system || undefined,
-      messages:   converted.messages,
-      max_tokens: body.max_tokens || 8096,
-      temperature: body.temperature ?? 1,
-      stream: true,
-    }),
+    body: JSON.stringify(payload),
   });
 
-  if (!upstream.ok) {
-    const err = await upstream.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Anthropic HTTP ${upstream.status}`);
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`Lovable API ${resp.status}: ${text.slice(0, 200)}`);
   }
 
-  sseStart(res);
-  // role chunk
-  sseSend(res, makeChunk({ id, model, delta: { role: "assistant", content: "" } }));
+  const id    = `chatcmpl-${crypto.randomUUID()}`;
+  const mname = lovModel || "lovable-default";
 
-  const reader = upstream.body.getReader();
+  if (!stream) {
+    // collect full response
+    const reader = resp.body.getReader();
+    const dec    = new TextDecoder();
+    let buf = "", fullText = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const raw = line.slice(5).trim();
+        if (!raw || raw === "[DONE]") continue;
+        try {
+          const evt = JSON.parse(raw);
+          // Lovable SSE events: type="text_delta" or "content_block_delta"
+          const delta = evt.delta?.text || evt.text || evt.content || "";
+          if (delta) fullText += delta;
+        } catch {}
+      }
+    }
+    return {
+      id, object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: mname,
+      choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    };
+  }
+
+  // streaming
+  sseStart(res);
+  sseSend(res, makeChunk(id, mname, { role: "assistant", content: "" }));
+
+  const reader = resp.body.getReader();
   const dec    = new TextDecoder();
-  let buf      = "";
+  let buf = "";
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop();
+    const lines = buf.split("\n"); buf = lines.pop();
     for (const line of lines) {
       if (!line.startsWith("data:")) continue;
       const raw = line.slice(5).trim();
       if (!raw || raw === "[DONE]") continue;
-      let evt;
-      try { evt = JSON.parse(raw); } catch { continue; }
-      if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-        sseSend(res, makeChunk({ id, model, delta: { content: evt.delta.text } }));
-      }
-      if (evt.type === "message_delta" && evt.delta?.stop_reason) {
-        sseSend(res, makeChunk({ id, model, delta: {}, finish_reason: "stop" }));
-      }
+      try {
+        const evt   = JSON.parse(raw);
+        const delta = evt.delta?.text || evt.text || evt.content || "";
+        if (delta) sseSend(res, makeChunk(id, mname, { content: delta }));
+      } catch {}
     }
   }
+
+  sseSend(res, makeChunk(id, mname, {}, "stop"));
   sseDone(res);
 }
 
-// ── Anthropic non-streaming ───────────────────────────────────────────────────
-async function callAnthropic(body) {
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set in .env");
-  const model     = body.model || DEFAULT_MODEL;
-  const converted = toAnthropicMessages(body.messages || []);
+// ── Routes ──────────────────────────────────────────────────────────────────
 
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      system:     converted.system || undefined,
-      messages:   converted.messages,
-      max_tokens: body.max_tokens || 8096,
-      temperature: body.temperature ?? 1,
-    }),
-  });
+// Health / status
+app.get("/health", (_req, res) => res.json({
+  ok: true,
+  has_token: !!lovableToken,
+  project_id: lovableProjectId || null,
+  models: LOVABLE_MODELS.map(m => m.id),
+}));
+app.get("/v1/health", (_req, res) => res.json({ ok: true }));
 
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data?.error?.message || `Anthropic HTTP ${resp.status}`);
-  const content = (data.content || []).map(p => p.text || "").join("");
-  const id = data.id || `chatcmpl-${crypto.randomUUID()}`;
-  return {
-    id,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    usage: {
-      prompt_tokens:     data.usage?.input_tokens  || 0,
-      completion_tokens: data.usage?.output_tokens || 0,
-      total_tokens:     (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
-    },
-    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
-  };
-}
+// Token push — extension or user POSTs token here
+// POST /token { token, project_id }
+app.post("/token", (req, res) => {
+  const tok = String(req.body.token || "").replace(/^Bearer\s+/i, "").trim();
+  const pid = String(req.body.project_id || "").trim();
+  if (tok) { lovableToken = tok; console.log("[token] Lovable token updated"); }
+  if (pid) { lovableProjectId = pid; console.log("[token] Project ID:", pid); }
+  res.json({ ok: true, has_token: !!lovableToken, project_id: lovableProjectId });
+});
 
-// ── OpenAI streaming proxy ────────────────────────────────────────────────────
-async function streamOpenAI(body, res) {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set in .env");
-  const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({ ...body, stream: true }),
-  });
+// GET current token status
+app.get("/token", (_req, res) => res.json({
+  has_token: !!lovableToken,
+  token_preview: lovableToken ? lovableToken.slice(0, 12) + "..." : null,
+  project_id: lovableProjectId || null,
+}));
 
-  if (!upstream.ok) {
-    const err = await upstream.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `OpenAI HTTP ${upstream.status}`);
-  }
-
-  sseStart(res);
-  const reader = upstream.body.getReader();
-  const dec    = new TextDecoder();
-  let buf      = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop();
-    for (const line of lines) {
-      if (!line.startsWith("data:")) continue;
-      const raw = line.slice(5).trim();
-      if (raw === "[DONE]") { sseDone(res); return; }
-      res.write(`data: ${raw}\n\n`);
-    }
-  }
-  sseDone(res);
-}
-
-// ── OpenAI non-streaming proxy ────────────────────────────────────────────────
-async function callOpenAI(body) {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set in .env");
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({ ...body, stream: false }),
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data?.error?.message || `OpenAI HTTP ${resp.status}`);
-  return data;
-}
-
-// ── Routes ────────────────────────────────────────────────────────────────────
-
-// Health
-app.get("/health",      (_req, res) => res.json({ ok: true, models: ALL_MODELS.map(m => m.id) }));
-app.get("/v1/health",   (_req, res) => res.json({ ok: true }));
-
-// Models list — both /v1/models and /models
-function modelsResponse(_req, res) {
+// Models
+function modelsHandler(_req, res) {
   res.json({
     object: "list",
-    data: ALL_MODELS.map(m => ({
-      id: m.id,
-      object: "model",
-      created: 1700000000,
-      owned_by: isAnthropicModel(m.id) ? "anthropic" : "openai",
-      context_window: m.ctx,
-      capabilities: { chat_completions: true, streaming: true },
+    data: LOVABLE_MODELS.map(m => ({
+      id: m.id, object: "model", created: 1700000000, owned_by: "lovable",
     })),
   });
 }
-app.get("/v1/models",     requireAuth, modelsResponse);
-app.get("/models",        requireAuth, modelsResponse);
-app.get("/v1/models/:id", requireAuth, (req, res) => {
-  const m = ALL_MODELS.find(x => x.id === req.params.id);
-  if (!m) return res.status(404).json({ error: { message: "Model not found", type: "invalid_request_error" } });
-  res.json({ id: m.id, object: "model", created: 1700000000, owned_by: isAnthropicModel(m.id) ? "anthropic" : "openai" });
-});
+app.get("/v1/models", requireAuth, modelsHandler);
+app.get("/models",    requireAuth, modelsHandler);
 
-// Chat completions — core endpoint, both /v1/chat/completions and /chat/completions
-async function chatCompletionsHandler(req, res) {
-  const model   = req.body.model || DEFAULT_MODEL;
-  const stream  = !!req.body.stream;
-  const isAnt   = isAnthropicModel(model);
-
+// Chat completions
+async function chatHandler(req, res) {
+  const model  = req.body.model || "auto";
+  const stream = !!req.body.stream;
   try {
-    if (stream) {
-      if (isAnt) return await streamAnthropic({ ...req.body, model }, res);
-      return await streamOpenAI({ ...req.body, model }, res);
-    } else {
-      const data = isAnt
-        ? await callAnthropic({ ...req.body, model })
-        : await callOpenAI({ ...req.body, model });
-      return res.json(data);
-    }
+    const result = await lovableChat({ messages: req.body.messages || [], model, stream, res });
+    if (!stream) res.json(result);
   } catch (err) {
     if (res.headersSent) { res.end(); return; }
-    return res.status(500).json({
-      error: { message: err.message || "Proxy error", type: "server_error" }
-    });
+    res.status(500).json({ error: { message: err.message, type: "server_error" } });
   }
 }
-app.post("/v1/chat/completions", requireAuth, chatCompletionsHandler);
-app.post("/chat/completions",    requireAuth, chatCompletionsHandler);
+app.post("/v1/chat/completions", requireAuth, chatHandler);
+app.post("/chat/completions",    requireAuth, chatHandler);
 
-// Completions (legacy, used by some tools)
+// Legacy completions
 app.post("/v1/completions", requireAuth, async (req, res) => {
-  const prompt = req.body.prompt || "";
-  const model  = req.body.model || DEFAULT_MODEL;
-  const asChat = { ...req.body, model, messages: [{ role: "user", content: prompt }] };
-  delete asChat.prompt;
+  const messages = [{ role: "user", content: req.body.prompt || "" }];
   try {
-    const data = isAnthropicModel(model)
-      ? await callAnthropic(asChat)
-      : await callOpenAI({ ...asChat, stream: false });
-    const text = data.choices?.[0]?.message?.content || "";
-    res.json({
-      id: data.id || `cmpl-${crypto.randomUUID()}`,
-      object: "text_completion",
-      created: Math.floor(Date.now() / 1000),
-      model,
-      choices: [{ text, index: 0, finish_reason: "stop" }],
-      usage: data.usage || {},
-    });
+    const result = await lovableChat({ messages, model: req.body.model || "auto", stream: false, res });
+    const text = result.choices?.[0]?.message?.content || "";
+    res.json({ id: result.id, object: "text_completion", created: result.created, model: result.model, choices: [{ text, index: 0, finish_reason: "stop" }] });
   } catch (err) {
     res.status(500).json({ error: { message: err.message, type: "server_error" } });
   }
 });
 
-// Embeddings stub (Claude Code/Codex sometimes checks this)
-app.post("/v1/embeddings", requireAuth, async (req, res) => {
-  if (!process.env.OPENAI_API_KEY) {
-    return res.status(501).json({ error: { message: "OPENAI_API_KEY not set for embeddings", type: "invalid_request_error" } });
-  }
-  try {
-    const resp = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: JSON.stringify(req.body),
-    });
-    const data = await resp.json();
-    res.status(resp.status).json(data);
-  } catch (err) {
-    res.status(500).json({ error: { message: err.message, type: "server_error" } });
-  }
-});
+// ── Start ────────────────────────────────────────────────────────────────────
+createServer(app).listen(PORT, "127.0.0.1", () => {
+  console.log(`
+╔══════════════════════════════════════════════════════════╗
+║         Lovable Local OpenAI-Compatible Endpoint         ║
+╚══════════════════════════════════════════════════════════╝
 
-// OpenAI Responses API (used by Codex CLI)
-app.post("/v1/responses", requireAuth, async (req, res) => {
-  const model  = req.body.model || DEFAULT_MODEL;
-  const stream = !!req.body.stream;
-  // convert Responses API format to chat completions
-  let messages = [];
-  if (req.body.system)   messages.push({ role: "system", content: req.body.system });
-  if (req.body.input) {
-    if (typeof req.body.input === "string") {
-      messages.push({ role: "user", content: req.body.input });
-    } else if (Array.isArray(req.body.input)) {
-      for (const item of req.body.input) {
-        if (item.role && item.content) messages.push(item);
-        else if (item.type === "message") messages.push({ role: item.role || "user", content: item.content });
-      }
-    }
-  }
-  if (!messages.length) messages.push({ role: "user", content: "" });
+  Base URL  : http://127.0.0.1:${PORT}/v1
+  API key   : ${LOCAL_API_KEY}
+  Token     : ${lovableToken ? "✓ loaded from .env" : "✗ not set — push from extension or set LOVABLE_TOKEN"}
+  Project   : ${lovableProjectId || "not set — open a project on lovable.dev"}
 
-  const chatBody = { model, messages, max_tokens: req.body.max_output_tokens || 8096, stream };
+  Endpoints :
+    GET  /health
+    GET  /token                     ← check token status
+    POST /token                     ← push token from extension
+    GET  /v1/models
+    POST /v1/chat/completions       ← streaming + non-streaming
+    POST /v1/completions            ← legacy
 
-  try {
-    if (stream) {
-      sseStart(res);
-      const id = `resp-${crypto.randomUUID()}`;
-      // header event
-      sseSend(res, { type: "response.created", response: { id, object: "realtime.response", status: "in_progress" } });
-      sseSend(res, { type: "response.output_item.added", item: { type: "message", role: "assistant" } });
-      sseSend(res, { type: "response.content_part.added", part: { type: "output_text", text: "" } });
+  Claude Code CLI:
+    set OPENAI_API_KEY=${LOCAL_API_KEY}
+    set OPENAI_BASE_URL=http://127.0.0.1:${PORT}/v1
+    claude --model claude-sonnet-4-5
 
-      // stream through anthropic/openai and relay as Responses events
-      let fullText = "";
-      const isAnt = isAnthropicModel(model);
-      if (isAnt) {
-        if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not set in .env");
-        const converted = toAnthropicMessages(messages);
-        const upstream = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-          body: JSON.stringify({ model, system: converted.system || undefined, messages: converted.messages, max_tokens: chatBody.max_tokens, stream: true }),
-        });
-        if (!upstream.ok) { const e = await upstream.json().catch(() => ({})); throw new Error(e?.error?.message || `Anthropic HTTP ${upstream.status}`); }
-        const reader = upstream.body.getReader();
-        const dec = new TextDecoder();
-        let buf = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          const lines = buf.split("\n"); buf = lines.pop();
-          for (const line of lines) {
-            if (!line.startsWith("data:")) continue;
-            const raw = line.slice(5).trim();
-            if (!raw || raw === "[DONE]") continue;
-            let evt; try { evt = JSON.parse(raw); } catch { continue; }
-            if (evt.type === "content_block_delta" && evt.delta?.text) {
-              fullText += evt.delta.text;
-              sseSend(res, { type: "response.output_text.delta", delta: evt.delta.text });
-            }
-          }
-        }
-      } else {
-        if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set in .env");
-        const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-          body: JSON.stringify({ ...chatBody, stream: true }),
-        });
-        if (!upstream.ok) { const e = await upstream.json().catch(() => ({})); throw new Error(e?.error?.message || `OpenAI HTTP ${upstream.status}`); }
-        const reader = upstream.body.getReader();
-        const dec = new TextDecoder();
-        let buf = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          const lines = buf.split("\n"); buf = lines.pop();
-          for (const line of lines) {
-            if (!line.startsWith("data:")) continue;
-            const raw = line.slice(5).trim();
-            if (!raw || raw === "[DONE]") continue;
-            let chunk; try { chunk = JSON.parse(raw); } catch { continue; }
-            const delta = chunk.choices?.[0]?.delta?.content || "";
-            if (delta) { fullText += delta; sseSend(res, { type: "response.output_text.delta", delta }); }
-          }
-        }
-      }
+  Codex CLI:
+    set OPENAI_API_KEY=${LOCAL_API_KEY}
+    set OPENAI_BASE_URL=http://127.0.0.1:${PORT}/v1
+    codex
 
-      sseSend(res, { type: "response.output_text.done", text: fullText });
-      sseSend(res, { type: "response.output_item.done", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: fullText }] } });
-      sseSend(res, { type: "response.completed", response: { id, object: "realtime.response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: fullText }] }] } });
-      sseDone(res);
-    } else {
-      const data = isAnthropicModel(model)
-        ? await callAnthropic(chatBody)
-        : await callOpenAI({ ...chatBody, stream: false });
-      const text = data.choices?.[0]?.message?.content || "";
-      const id = `resp-${crypto.randomUUID()}`;
-      res.json({
-        id,
-        object: "response",
-        created_at: Math.floor(Date.now() / 1000),
-        model,
-        status: "completed",
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }],
-        usage: data.usage || {},
-      });
-    }
-  } catch (err) {
-    if (res.headersSent) { res.end(); return; }
-    res.status(500).json({ error: { message: err.message, type: "server_error" } });
-  }
-});
-
-// ── Start ─────────────────────────────────────────────────────────────────────
-const server = createServer(app);
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`\nOpenAI-compatible local endpoint running\n`);
-  console.log(`  Base URL  : http://127.0.0.1:${PORT}/v1`);
-  console.log(`  API key   : ${LOCAL_API_KEY}`);
-  console.log(`  Default   : ${DEFAULT_MODEL}`);
-  console.log(`\nSupported endpoints:`);
-  console.log(`  GET  /v1/models`);
-  console.log(`  POST /v1/chat/completions   (streaming + non-streaming)`);
-  console.log(`  POST /v1/completions        (legacy)`);
-  console.log(`  POST /v1/embeddings         (proxied to OpenAI)`);
-  console.log(`  POST /v1/responses          (Codex CLI Responses API)`);
-  console.log(`\nClaude Code CLI:`);
-  console.log(`  ANTHROPIC_BASE_URL=http://127.0.0.1:${PORT} ANTHROPIC_API_KEY=${LOCAL_API_KEY} claude`);
-  console.log(`\nCodex CLI:`);
-  console.log(`  OPENAI_BASE_URL=http://127.0.0.1:${PORT}/v1 OPENAI_API_KEY=${LOCAL_API_KEY} codex`);
-  console.log(`\nOpenAI CLI:`);
-  console.log(`  OPENAI_BASE_URL=http://127.0.0.1:${PORT}/v1 OPENAI_API_KEY=${LOCAL_API_KEY} openai chat.completions.create ...`);
-  console.log(`\nAmazon Q / Continue / Cursor / Cline:`);
-  console.log(`  Base URL : http://127.0.0.1:${PORT}/v1`);
-  console.log(`  API Key  : ${LOCAL_API_KEY}\n`);
+  Push token manually:
+    curl -X POST http://127.0.0.1:${PORT}/token ^
+      -H "Content-Type: application/json" ^
+      -d "{\\"token\\":\\"YOUR_LOVABLE_TOKEN\\",\\"project_id\\":\\"YOUR_PROJECT_ID\\"}"
+`);
 });
