@@ -66,7 +66,8 @@
   }
 
   function _qlUlid() {
-    var C = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    // Lovable validates TypeID suffixes as lowercase Crockford base32.
+    var C = "0123456789abcdefghjkmnpqrstvwxyz";
     var ts = Date.now();
     var r = "";
     for (var i = 9; i >= 0; i--) {
@@ -145,8 +146,9 @@
         return;
       } catch (e) {
         if (typeof MXX_DEBUG !== "undefined" && MXX_DEBUG) {
-          console.warn("[PK Bridge] WebSocket failed, using native:", e.message);
+          console.warn("[PK Bridge] WebSocket failed:", e.message);
         }
+        throw e;
       }
     }
     await sendNativeToLovable(text);
