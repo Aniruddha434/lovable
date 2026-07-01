@@ -1,0 +1,13 @@
+{
+  "name": "lovable-extension-hosting-root",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "dashboard"
+  ],
+  "scripts": {
+    "build": "npm --workspace dashboard run build",
+    "dev": "npm --workspace dashboard run dev",
+    "start": "npm --workspace dashboard run start"
+  }
+}

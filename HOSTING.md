@@ -17,9 +17,8 @@ The `dashboard/` folder is a Vercel-ready Next.js app. It gives you an admin das
 ## Deploy To Vercel
 
 1. Install Vercel CLI if needed: `npm i -g vercel`.
-2. Go into the dashboard folder: `cd dashboard`.
-3. Run `npm install`.
-4. Run `vercel` and follow the prompts.
+2. From the repo root, run `npm install`.
+3. Run `vercel` and follow the prompts.
 5. In Vercel, add KV Storage to the project.
 6. In Vercel, add Blob Storage to the project.
 7. Add environment variables:
