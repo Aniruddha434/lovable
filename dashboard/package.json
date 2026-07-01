@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@vercel/blob": "latest",
-    "@vercel/kv": "latest",
+    "@vercel/edge-config": "latest",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest"

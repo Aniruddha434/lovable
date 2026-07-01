@@ -1,8 +1,12 @@
-import { kv } from "@vercel/kv";
+// Simple in-memory store for dashboard
+// Data persists during server runtime; use dashboard to manage licenses
 
-const LICENSE_SET = "licenses";
-const EVENTS_LIST = "events";
-const UPLOADS_LIST = "uploads";
+let licenses = {};
+let events = [];
+let uploads = [];
+
+const MAX_EVENTS = 200;
+const MAX_UPLOADS = 200;
 
 export function licenseKeyId(key) {
   return `license:${String(key || "").trim().toUpperCase()}`;
@@ -17,21 +21,18 @@ export function makeLicenseKey() {
 export async function getLicense(key) {
   const normalized = String(key || "").trim().toUpperCase();
   if (!normalized) return null;
-  return kv.get(licenseKeyId(normalized));
+  return licenses[normalized] || null;
 }
 
 export async function saveLicense(license) {
   const key = String(license.key || "").trim().toUpperCase();
   const item = { ...license, key, updated_at: new Date().toISOString() };
-  await kv.set(licenseKeyId(key), item);
-  await kv.sadd(LICENSE_SET, key);
+  licenses[key] = item;
   return item;
 }
 
 export async function listLicenses() {
-  const keys = await kv.smembers(LICENSE_SET);
-  const items = await Promise.all((keys || []).map((key) => getLicense(key)));
-  return items.filter(Boolean).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  return Object.values(licenses).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
 }
 
 export async function createLicense({ owner = "", expires_at = "", status = "active" }) {
@@ -43,28 +44,27 @@ export async function createLicense({ owner = "", expires_at = "", status = "act
 
 export async function deleteLicense(key) {
   const normalized = String(key || "").trim().toUpperCase();
-  await kv.del(licenseKeyId(normalized));
-  await kv.srem(LICENSE_SET, normalized);
+  delete licenses[normalized];
 }
 
 export async function addEvent(event) {
   const item = { id: crypto.randomUUID(), created_at: new Date().toISOString(), ...event };
-  await kv.lpush(EVENTS_LIST, item);
-  await kv.ltrim(EVENTS_LIST, 0, 199);
+  events.unshift(item);
+  events = events.slice(0, MAX_EVENTS);
   return item;
 }
 
 export async function listEvents(limit = 50) {
-  return kv.lrange(EVENTS_LIST, 0, Math.max(0, limit - 1));
+  return events.slice(0, Math.max(0, limit));
 }
 
 export async function addUpload(upload) {
   const item = { id: crypto.randomUUID(), created_at: new Date().toISOString(), ...upload };
-  await kv.lpush(UPLOADS_LIST, item);
-  await kv.ltrim(UPLOADS_LIST, 0, 199);
+  uploads.unshift(item);
+  uploads = uploads.slice(0, MAX_UPLOADS);
   return item;
 }
 
 export async function listUploads(limit = 50) {
-  return kv.lrange(UPLOADS_LIST, 0, Math.max(0, limit - 1));
+  return uploads.slice(0, Math.max(0, limit));
 }
