@@ -1664,7 +1664,7 @@
     chrome.storage.local.get(["ql_dark_mode"], r => { if(r.ql_dark_mode === false) document.body.classList.add('sp-light'); });
 
     function bootApp() {
-      chrome.storage.local.get(["ql_channel_redirected", "ql_license_valid","ql_license_key","ql_user_name","ql_expires_at","ql_activated_at","ql_license_status","ql_validity_minutes","ql_session_id"], async (res) => {
+      chrome.storage.local.get(["ql_license_valid","ql_license_key","ql_user_name","ql_session_id"], async (res) => {
         if (!res.ql_license_valid || !res.ql_session_id) await ensureInternalSessionLocal();
         userName = normalizeLicenseUserName(res.ql_user_name);
         expiresAt = null;
@@ -1677,19 +1677,7 @@
       });
     }
 
-    // License gate runs before the main UI. Re-entry on expiry/revoke loops back here.
-    if (window.MxxLicense && typeof window.MxxLicense.ensure === "function") {
-      window.MxxLicense.ensure(function() { bootApp(); });
-      // Live-lock: if the background heartbeat (or another tab) clears the
-      // license while the panel is open, force the gate back immediately.
-      if (typeof window.MxxLicense.onLockChange === "function") {
-        window.MxxLicense.onLockChange(function () {
-          try { window.MxxLicense.ensure(function() { bootApp(); }); } catch (e) {}
-        });
-      }
-    } else {
-      bootApp();
-    }
+    bootApp();
   }
   init();
 
