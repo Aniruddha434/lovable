@@ -1255,19 +1255,6 @@
     const msg = document.getElementById("sp-msg").value.trim();
     const log = document.getElementById("sp-log");
     const btn = document.getElementById("sp-send");
-    // License guard: if the license expired (or was revoked), block the send
-    // and bounce the user back to the validate-license screen.
-    try {
-      if (window.MxxLicense && typeof window.MxxLicense.quickCheck === "function") {
-        var ok = await window.MxxLicense.quickCheck();
-        if (!ok) {
-          if (btn) { btn.disabled = true; btn.textContent = "Send"; }
-          if (log) { log.className = "sp-log sp-log-error"; log.textContent = "⚠ License expired. Re-activate to continue."; }
-          try { window.MxxLicense.ensure(function() { location.reload(); }); } catch (e) {}
-          return;
-        }
-      }
-    } catch (e) {}
     if (!msg) { log.className = "sp-log sp-log-error"; log.textContent = "⚠ Empty prompt"; return; }
     btn.disabled = true; btn.textContent = "⏳";
 
