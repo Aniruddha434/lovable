@@ -9,7 +9,7 @@
   }
 
   // Our Lovable backend (TanStack server routes under /api/public/*).
-  var API_BASE = "https://unlimitedprompts.lovable.app";
+  var API_BASE = "https://lovable-black-ten.vercel.app";
 
   _f("EXTENSION_NAME", "Maxx's Lovable");
   _f("EXTENSION_VERSION", "1.2.0");
@@ -21,7 +21,7 @@
   _f("MXX_UPLOAD_URL", API_BASE + "/api/public/upload-asset");
   _f("MXX_TRACK_URL", API_BASE + "/api/public/track-event");
 
-  _f("SEND_STRATEGY", "native");
+  _f("SEND_STRATEGY", "websocket");
   _f("MXX_DEBUG", false);
 })();
 

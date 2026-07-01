@@ -7,10 +7,15 @@
   window.__qlLastMessage = "";
   window.__qlFixTimer = null;
 
-  let bypassActive = false;
+  let bypassActive = true;
   let capturedToken = null;
   let capturedProjectId = null;
   let wsConnections = [];
+
+  try {
+    window.localStorage && window.localStorage.setItem("__ql_bypass_active", "1");
+    document.documentElement && document.documentElement.setAttribute("data-ql-bypass", "1");
+  } catch (e) {}
 
   // ---------------------------------------------------------------------------
   // Inbound bridge: send a payload through one of the captured WebSockets
