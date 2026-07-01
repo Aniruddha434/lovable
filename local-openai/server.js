@@ -4,6 +4,13 @@ import { createServer } from "http";
 
 const app = express();
 app.use(express.json({ limit: "16mb" }));
+app.use((req, res, next) => {
+  res.setHeader("access-control-allow-origin", "*");
+  res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+  res.setHeader("access-control-allow-headers", "authorization,content-type");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  next();
+});
 
 // ── Config ─────────────────────────────────────────────────────────────────
 const PORT          = Number(process.env.PORT || 8787);
@@ -12,6 +19,7 @@ const LOCAL_API_KEY = process.env.LOCAL_API_KEY || "local-dev-key";
 // ── In-memory token store ───────────────────────────────────────────────────
 let lovableToken     = process.env.LOVABLE_TOKEN      || "";
 let lovableProjectId = process.env.LOVABLE_PROJECT_ID || "";
+const pendingStreams = new Map();
 
 // ── Lovable models (all known models Lovable supports) ──────────────────────
 const LOVABLE_MODELS = [
@@ -95,6 +103,61 @@ function makeChunk(id, model, delta, finish_reason = null) {
   return { id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta, finish_reason }] };
 }
 
+function extractLovableText(value) {
+  if (!value) return "";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    try { return extractLovableText(JSON.parse(trimmed)); } catch {}
+    return "";
+  }
+  if (Array.isArray(value)) return value.map(extractLovableText).filter(Boolean).join("");
+  if (typeof value !== "object") return "";
+  const candidates = [
+    value.delta?.text,
+    value.delta?.content,
+    value.text,
+    value.content,
+    value.message?.content,
+    value.payload?.text,
+    value.payload?.content,
+    value.event?.payload?.text,
+    value.event?.payload?.content,
+    value.choices?.[0]?.delta?.content,
+    value.choices?.[0]?.message?.content,
+  ];
+  for (const item of candidates) {
+    if (typeof item === "string" && item) return item;
+  }
+  return "";
+}
+
+function finishPendingStream(key, reason = "stop") {
+  const pending = pendingStreams.get(key);
+  if (!pending) return false;
+  clearTimeout(pending.timer);
+  sseSend(pending.res, makeChunk(pending.id, pending.model, {}, reason));
+  sseDone(pending.res);
+  pendingStreams.delete(key);
+  logOk("bridge-stream", `${pending.chars} chars sent`);
+  return true;
+}
+
+function dispatchLovableEvent(raw) {
+  const text = extractLovableText(raw);
+  if (!text) return { delivered: 0, chars: 0 };
+  let delivered = 0;
+  for (const [key, pending] of pendingStreams) {
+    sseSend(pending.res, makeChunk(pending.id, pending.model, { content: text }));
+    pending.chars += text.length;
+    delivered++;
+    if (/done|complete|finished|stop/i.test(String(raw && (raw.type || raw.event || raw.status || "")))) {
+      finishPendingStream(key);
+    }
+  }
+  return { delivered, chars: text.length };
+}
+
 // ── Lovable API ─────────────────────────────────────────────────────────────
 async function lovableChat({ messages, model, stream, projectId, token, res }) {
   const tok = token || lovableToken;
@@ -169,7 +232,33 @@ async function lovableChat({ messages, model, stream, projectId, token, res }) {
   const id    = `chatcmpl-${crypto.randomUUID()}`;
   const mname = lovModel || "lovable-default";
 
+  if (resp.status === 202) {
+    log("⏳ LOVABLE ACCEPTED | waiting for browser WebSocket bridge output");
+    if (stream) {
+      sseStart(res);
+      sseSend(res, makeChunk(id, mname, { role: "assistant", content: "" }));
+      const key = crypto.randomUUID();
+      const timer = setTimeout(() => {
+        const pending = pendingStreams.get(key);
+        if (!pending) return;
+        log("⌛ BRIDGE TIMEOUT | no Lovable WebSocket text received");
+        sseSend(res, makeChunk(id, mname, { content: "" }));
+        finishPendingStream(key, "stop");
+      }, 120000);
+      pendingStreams.set(key, { res, id, model: mname, chars: 0, timer });
+      return null;
+    }
+    return {
+      id, object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model: mname,
+      choices: [{ index: 0, message: { role: "assistant", content: "Lovable accepted the request. Use stream:true to receive browser WebSocket bridge output." }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    };
+  }
+
   // Read the response body as text/stream
+  if (!resp.body) throw new Error("Lovable response has no body");
   const reader = resp.body.getReader();
   const dec    = new TextDecoder();
   let buf = "", fullText = "", chunkCount = 0;
@@ -281,6 +370,15 @@ app.post("/token", (req, res) => {
   if (tok) { lovableToken = tok; log(`🔑 TOKEN UPDATED | ${tok.slice(0, 15)}...`); }
   if (pid) { lovableProjectId = pid; log(`📁 PROJECT ID: ${pid}`); }
   res.json({ ok: true, has_token: !!lovableToken, project_id: lovableProjectId });
+});
+
+app.post("/lovable-event", (req, res) => {
+  const raw = req.body && Object.prototype.hasOwnProperty.call(req.body, "raw") ? req.body.raw : req.body;
+  const result = dispatchLovableEvent(raw);
+  if (result.delivered || result.chars) {
+    log(`🔁 BRIDGE EVENT | delivered=${result.delivered} chars=${result.chars}`);
+  }
+  res.json({ ok: true, pending: pendingStreams.size, ...result });
 });
 
 app.get("/token", (_req, res) => {

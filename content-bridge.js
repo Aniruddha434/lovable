@@ -154,6 +154,17 @@
 
   window.__pkDeliverPrompt = deliverPromptToLovable;
 
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== window || !ev.data || ev.data.type !== "lovableWsMessage") return;
+    try {
+      fetch("http://127.0.0.1:8787/lovable-event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ raw: ev.data.data || "" })
+      }).catch(function () {});
+    } catch (e) {}
+  });
+
   chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
     if (msg && msg.action === "ping") {
       sendResponse({ ok: true, bridge: true });

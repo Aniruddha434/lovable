@@ -409,6 +409,9 @@
           try {
             const preview = typeof event.data === "string" ? event.data.slice(0, 300) : "[binary]";
             log("[MasterLovableHook] WS RECV [" + safeUrl.slice(0, 60) + "] ←", preview);
+            if (typeof event.data === "string") {
+              window.postMessage({ type: "lovableWsMessage", data: event.data }, window.location.origin);
+            }
 
             if (typeof event.data === "string" && event.data.includes("#bld:") && event.data.includes("hasError")) {
               try {

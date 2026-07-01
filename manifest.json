@@ -17,7 +17,8 @@
     "https://api.lovable.dev/*",
     "https://lovable.dev/*",
     "https://lovable-api.com/*",
-    "https://unlimitedprompts.lovable.app/*"
+    "https://lovable-black-ten.vercel.app/*",
+    "http://127.0.0.1:8787/*"
   ],
   "action": {
     "default_title": "Maxx's Lovable",
