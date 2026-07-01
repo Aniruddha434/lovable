@@ -667,9 +667,12 @@
         '<label for="sp-model-select" style="font-size:11px;color:var(--ql-text-muted,#888);white-space:nowrap">Model</label>' +
         '<select id="sp-model-select" style="flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid var(--ql-border,#333);background:var(--ql-bg-2,#1c1c1c);color:inherit;font-size:12px">' +
           '<option value="auto">Lovable default</option>' +
-          '<option value="claude-3-5-sonnet-latest">Claude 3.5 Sonnet</option>' +
-          '<option value="claude-3-7-sonnet-latest">Claude 3.7 Sonnet</option>' +
+          '<option value="claude-opus-4-8">Claude Opus 4</option>' +
+          '<option value="claude-sonnet-4-5-20250514">Claude Sonnet 4.5</option>' +
           '<option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>' +
+          '<option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet</option>' +
+          '<option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>' +
+          '<option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>' +
           '<option value="gpt-4o">GPT-4o</option>' +
           '<option value="gpt-4o-mini">GPT-4o mini</option>' +
           '<option value="o3-mini">o3 mini</option>' +
