@@ -73,7 +73,8 @@ function contentToString(content) {
 }
 
 function ulid() {
-  const C = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  // Lovable validates TypeID suffixes as lowercase Crockford base32.
+  const C = "0123456789abcdefghjkmnpqrstvwxyz";
   let ts = Date.now(), r = "";
   for (let i = 9; i >= 0; i--) { r = C[ts % 32] + r; ts = Math.floor(ts / 32); }
   for (let j = 0; j < 16; j++) r += C[Math.floor(Math.random() * 32)];
